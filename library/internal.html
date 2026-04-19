@@ -299,14 +299,18 @@ main {
 let PROMPTS = [];
 const SHOW_INTERNAL = true;  // index.html: false, internal.html: true
 
-async function loadRegistry() {
-  // Vercel strips trailing slashes (cleanUrls + trailingSlash:false), so a
-  // relative fetch from /library resolves against /. Build the correct URL
-  // explicitly from the /library prefix in the current pathname.
+// Vercel strips trailing slashes (cleanUrls + trailingSlash:false), so a page
+// served from /library resolves relative URLs against /. Compute the library
+// base once and prefix it onto every URL (fetch + card links) so paths work
+// regardless of whether the URL has a trailing slash.
+const LIBRARY_BASE = (() => {
   const m = window.location.pathname.match(/^(.*\/library)(\/|$)/);
-  const base = m ? m[1] + '/' : '/library/';
+  return m ? m[1] + '/' : '/library/';
+})();
+
+async function loadRegistry() {
   try {
-    const res = await fetch(base + 'prompts.json', { cache: 'no-store' });
+    const res = await fetch(LIBRARY_BASE + 'prompts.json', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     PROMPTS = await res.json();
   } catch (e) {
@@ -348,7 +352,7 @@ function render() {
   filtered.forEach(p => {
     const a = document.createElement('a');
     a.className = 'card';
-    a.href = p.url;
+    a.href = LIBRARY_BASE + p.url;
     a.innerHTML = `
       <span class="cat">${escapeHtml(p.category)}${p.visibility === 'internal' ? '<span class="internal-chip">internal</span>' : ''}</span>
       <h3>${escapeHtml(p.title)}</h3>
