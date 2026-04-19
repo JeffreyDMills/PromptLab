@@ -294,31 +294,21 @@ main {
 
 <script>
 // ---------- PROMPT REGISTRY ----------
-// Each entry is a prompt page. Add entries here when you publish from Prompt Lab.
-// (Or extend this to fetch a prompts.json if you prefer.)
-const PROMPTS = [
-  {
-    "slug": "evaluation-dataset-generator",
-    "title": "Evaluation Dataset Generator",
-    "description": "Given any draft prompt, produces a 10-case stress-test dataset covering happy-path, edge, adversarial, and format scenarios \u2014 with per-case grading criteria.",
-    "category": "Meta",
-    "tags": [
-      "evaluation",
-      "meta-prompt",
-      "synthetic-data"
-    ],
-    "url": "prompts/evaluation-dataset-generator.html",
-    "finalScore": 9.2,
-    "iterations": 3,
-    "cases": 5,
-    "date": "2026-04-18",
-    "model": "claude-sonnet-4-6",
-    "visibility": "public"
-  }
-];
-// -------------------------------------
-
+// Loaded from library/prompts.json at page load. That file is the single source
+// of truth — the Lab's "Publish to GitHub" flow updates it atomically.
+let PROMPTS = [];
 const SHOW_INTERNAL = false;  // index.html: false, internal.html: true
+
+async function loadRegistry() {
+  try {
+    const res = await fetch('prompts.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    PROMPTS = await res.json();
+  } catch (e) {
+    console.warn('Registry fetch failed:', e.message);
+    PROMPTS = [];
+  }
+}
 
 function visible(p) {
   if (p.visibility === 'internal' && !SHOW_INTERNAL) return false;
@@ -400,20 +390,21 @@ function escapeHtml(s) {
 
 document.getElementById('search').addEventListener('input', render);
 
-renderCategories();
-renderMeta();
-render();
+(async () => {
+  await loadRegistry();
+  renderCategories();
+  renderMeta();
+  render();
 
-// Show empty state hint if the registry is empty
-if (!PROMPTS.filter(visible).length) {
-  document.getElementById('empty').style.display = 'block';
-  document.getElementById('empty').innerHTML = `
-    <div class="empty add-first">
-      <h3>No prompts yet.</h3>
-      <p>Run an evaluation in <a href="/">Prompt Lab</a> and click <strong>Publish to Library</strong>.<br>
-      Save the downloaded <code>.html</code> into <code>library/prompts/</code>, then paste the registry snippet into the <code>PROMPTS</code> array in this file.</p>
-    </div>`;
-}
+  if (!PROMPTS.filter(visible).length) {
+    document.getElementById('empty').style.display = 'block';
+    document.getElementById('empty').innerHTML = `
+      <div class="empty add-first">
+        <h3>No prompts yet.</h3>
+        <p>Run an evaluation in <a href="/">Prompt Lab</a> and click <strong>Publish to GitHub</strong>. The library updates automatically on the next Vercel deploy.</p>
+      </div>`;
+  }
+})();
 </script>
 
 </body>

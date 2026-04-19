@@ -627,6 +627,23 @@ details.adv .rubric-editor textarea { min-height: 100px; font-size: 12.5px; }
         <input type="number" id="maxIter" value="5" min="1" max="15">
       </div>
     </div>
+
+    <details class="adv" style="margin-top:16px;">
+      <summary>Publishing: GitHub &amp; repo (optional — enables one-click Publish)</summary>
+      <div class="settings-grid" style="grid-template-columns: 2fr 1fr; margin-top:10px;">
+        <div class="field">
+          <label for="ghRepo">GitHub repo (owner/name)</label>
+          <input type="text" id="ghRepo" placeholder="e.g. JeffreyDMills/PromptLab" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="ghPat">GitHub PAT (fine-grained, Contents: Read &amp; write)</label>
+          <input type="password" id="ghPat" placeholder="github_pat_..." autocomplete="off">
+        </div>
+      </div>
+      <div style="color:var(--text-muted); font-size:12px; margin-top:6px;">
+        PAT stored in sessionStorage only — cleared when you close this tab. When configured, the Publish modal commits the prompt page and updates <code>library/prompts.json</code> in one click; Vercel auto-deploys within a minute.
+      </div>
+    </details>
   </section>
 
   <!-- DRAFT PROMPT -->
@@ -1231,6 +1248,74 @@ function renderFinal(bestIter, targetScore, finished) {
   sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
+// ---------- GitHub Contents API helpers --------------------------------
+// Unicode-safe base64 (GitHub Contents API wants base64 content).
+function utf8ToBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+function base64ToUtf8(b64) {
+  const binary = atob(String(b64).replace(/\s/g, ''));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+async function ghGetFile(repo, path, token) {
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g, '/')}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    cache: 'no-store',
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`GitHub GET ${path} → ${res.status}: ${err.message || res.statusText}`);
+  }
+  const data = await res.json();
+  return { sha: data.sha, content: base64ToUtf8(data.content) };
+}
+
+async function ghPutFile(repo, path, content, token, message, sha = null) {
+  const body = {
+    message,
+    content: utf8ToBase64(content),
+    ...(sha ? { sha } : {}),
+  };
+  const res = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g, '/')}`, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`GitHub PUT ${path} → ${res.status}: ${err.message || res.statusText}`);
+  }
+  return res.json();
+}
+
+function getGhConfig() {
+  return {
+    repo: $('ghRepo').value.trim(),
+    token: $('ghPat').value.trim(),
+  };
+}
+
+function hasGhConfig() {
+  const { repo, token } = getGhConfig();
+  return !!(repo && token);
+}
+
 // ---------- Publish to Library -----------------------------------------
 function slugify(s) {
   return String(s || '').toLowerCase().trim()
@@ -1469,7 +1554,9 @@ function openPublishModal(bestIter) {
     ),
     el('div', { class: 'pbtns' },
       el('button', { class: 'btn-ghost', onclick: () => modal.remove() }, 'Cancel'),
-      el('button', { class: 'btn-primary', onclick: () => doPublish(bestIter, rubric, model, today, modal) }, 'Generate page')
+      el('button', { class: 'btn-secondary', onclick: () => doPublish(bestIter, rubric, model, today, modal, { mode: 'download' }) }, 'Download only'),
+      el('button', { class: 'btn-primary', onclick: () => doPublish(bestIter, rubric, model, today, modal, { mode: hasGhConfig() ? 'github' : 'download' }) },
+        hasGhConfig() ? 'Publish to GitHub' : 'Generate page')
     )
   );
   modal.appendChild(body);
@@ -1482,7 +1569,7 @@ function openPublishModal(bestIter) {
   $('p-slug').addEventListener('input', e => { e.target.dataset.edited = 'true'; });
 }
 
-function doPublish(bestIter, rubric, model, today, modal) {
+async function doPublish(bestIter, rubric, model, today, modal, opts = {}) {
   const title = $('p-title').value.trim();
   const slug = ($('p-slug').value.trim() || slugify(title));
   const category = $('p-cat').value.trim() || 'Uncategorized';
@@ -1496,8 +1583,27 @@ function doPublish(bestIter, rubric, model, today, modal) {
 
   const meta = { title, slug, category, description: desc, tags, visibility, model, date: today };
   const html = buildPromptPageHTML(meta, bestIter, state.iterations, rubric);
+  const registryEntry = {
+    slug, title, description: desc, category, tags,
+    url: `prompts/${slug}.html`,
+    finalScore: Number(bestIter.overall.toFixed(2)),
+    iterations: state.iterations.indexOf(bestIter),
+    cases: bestIter.cases.length,
+    date: today, model, visibility,
+  };
 
-  // Download the page
+  const body = modal.querySelector('.publish-body');
+
+  if (opts.mode === 'github') {
+    return publishFlowGithub({ html, meta, registryEntry, body, modal });
+  }
+  return publishFlowDownload({ html, meta, registryEntry, body, modal });
+}
+
+function publishFlowDownload({ html, meta, registryEntry, body, modal }) {
+  const { slug, visibility } = meta;
+
+  // Trigger the file download
   const blob = new Blob([html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1505,41 +1611,106 @@ function doPublish(bestIter, rubric, model, today, modal) {
   a.click();
   URL.revokeObjectURL(url);
 
-  // Replace modal contents with the registry snippet + instructions
-  const registryEntry = {
-    slug, title, description: desc, category, tags,
-    url: `prompts/${slug}.html`,
-    finalScore: Number(bestIter.overall.toFixed(2)),
-    iterations: state.iterations.indexOf(bestIter),  // improvements beyond the draft
-    cases: bestIter.cases.length,
-    date: today, model, visibility,
-  };
   const snippet = JSON.stringify(registryEntry, null, 2);
 
-  const body = modal.querySelector('.publish-body');
   body.innerHTML = '';
   body.appendChild(el('h2', {}, 'Published ✓'));
-  body.appendChild(el('p', { class: 'help' }, 'Two quick steps to wire this into your library.'));
+  body.appendChild(el('p', { class: 'help' }, 'Two quick steps to wire this into your library. (Configure GitHub in Setup → Publishing for one-click next time.)'));
 
   const step1 = el('div', { class: 'step' });
   step1.innerHTML = `<strong>1.</strong> Save the downloaded file into <code>library/prompts/${slug}.html</code>.`;
   body.appendChild(step1);
 
   const step2 = el('div', { class: 'step' });
-  step2.innerHTML = `<strong>2.</strong> Open <code>library/index.html</code>${visibility === 'internal' ? ' (and <code>library/internal.html</code>)' : ''} and add this entry to the <code>PROMPTS</code> array:`;
+  step2.innerHTML = `<strong>2.</strong> Open <code>library/prompts.json</code> and add this entry to the array:`;
   body.appendChild(step2);
 
-  const pre = el('pre', { class: 'snippet' }, snippet);
-  body.appendChild(pre);
+  body.appendChild(el('pre', { class: 'snippet' }, snippet));
 
-  const btnRow = el('div', { class: 'pbtns' },
+  body.appendChild(el('div', { class: 'pbtns' },
     el('button', { class: 'btn-secondary', onclick: async () => {
       try { await navigator.clipboard.writeText(snippet); toast('Registry snippet copied'); }
       catch { toast('Copy failed — select and copy manually.'); }
     }}, 'Copy snippet'),
     el('button', { class: 'btn-primary', onclick: () => modal.remove() }, 'Done')
-  );
-  body.appendChild(btnRow);
+  ));
+}
+
+async function publishFlowGithub({ html, meta, registryEntry, body, modal }) {
+  const { repo, token } = getGhConfig();
+  if (!repo || !token) {
+    body.innerHTML = '';
+    body.appendChild(el('h2', {}, 'GitHub not configured'));
+    body.appendChild(el('p', { class: 'help' }, 'Set your GitHub repo and PAT in the Setup card\'s "Publishing" section, then publish again.'));
+    body.appendChild(el('div', { class: 'pbtns' },
+      el('button', { class: 'btn-primary', onclick: () => modal.remove() }, 'OK')
+    ));
+    return;
+  }
+
+  // Progress UI
+  body.innerHTML = '';
+  body.appendChild(el('h2', {}, 'Publishing to GitHub…'));
+  const log = el('div', { style: 'font-family:monospace;font-size:13px;color:var(--text-muted);white-space:pre-wrap;margin-top:12px;' });
+  body.appendChild(log);
+  const step = (msg) => { log.textContent += msg + '\n'; };
+
+  try {
+    const htmlPath = `library/prompts/${meta.slug}.html`;
+    const registryPath = 'library/prompts.json';
+
+    step(`→ Checking ${htmlPath}…`);
+    const existingHtml = await ghGetFile(repo, htmlPath, token);
+    step(existingHtml ? '  (exists; will overwrite)' : '  (new file)');
+
+    step(`→ Writing ${htmlPath}…`);
+    const htmlCommit = await ghPutFile(repo, htmlPath, html, token,
+      `Publish library prompt: ${meta.title}`, existingHtml?.sha);
+
+    step(`→ Reading ${registryPath}…`);
+    const existingRegistry = await ghGetFile(repo, registryPath, token);
+    let registry = [];
+    if (existingRegistry) {
+      try { registry = JSON.parse(existingRegistry.content); }
+      catch { throw new Error(`${registryPath} is not valid JSON. Fix it in the repo and try again.`); }
+      if (!Array.isArray(registry)) throw new Error(`${registryPath} is not a JSON array.`);
+    }
+    const idx = registry.findIndex(p => p.slug === registryEntry.slug);
+    if (idx >= 0) { registry[idx] = registryEntry; step('  (slug already in registry; updating in place)'); }
+    else { registry.push(registryEntry); step(`  (added — registry now has ${registry.length} entries)`); }
+
+    step(`→ Writing ${registryPath}…`);
+    await ghPutFile(repo, registryPath, JSON.stringify(registry, null, 2) + '\n', token,
+      `Update library registry: ${meta.title}`, existingRegistry?.sha);
+
+    step('✓ Done. Vercel will redeploy within ~60 seconds.');
+
+    // Success state
+    const libraryUrl = new URL('/library/', window.location.origin).toString();
+    const commitUrl = htmlCommit.commit && htmlCommit.commit.html_url;
+
+    body.innerHTML = '';
+    body.appendChild(el('h2', {}, 'Published ✓'));
+    body.appendChild(el('p', { class: 'help' },
+      `Committed ${meta.title} to ${repo}. Vercel's auto-deploy will pick it up in about a minute.`));
+    const linkRow = el('div', { style: 'margin:14px 0; display:flex; gap:16px; flex-wrap:wrap;' });
+    linkRow.appendChild(el('a', { href: libraryUrl, target: '_blank', rel: 'noopener', class: 'btn btn-secondary' }, 'Open library ↗'));
+    if (commitUrl) linkRow.appendChild(el('a', { href: commitUrl, target: '_blank', rel: 'noopener', class: 'btn btn-secondary' }, 'View commit on GitHub ↗'));
+    body.appendChild(linkRow);
+    body.appendChild(el('div', { class: 'pbtns' },
+      el('button', { class: 'btn-primary', onclick: () => modal.remove() }, 'Done')
+    ));
+  } catch (e) {
+    body.innerHTML = '';
+    body.appendChild(el('h2', {}, 'Publish failed'));
+    body.appendChild(el('p', { class: 'help', style: 'color:var(--danger);' }, e.message));
+    body.appendChild(el('p', { class: 'help' },
+      'Common causes: PAT missing "Contents: Read and write" on this repo, repo name typo, or the registry file has invalid JSON. Fix and retry, or use Download-only as a fallback.'));
+    body.appendChild(el('div', { class: 'pbtns' },
+      el('button', { class: 'btn-ghost', onclick: () => modal.remove() }, 'Close'),
+      el('button', { class: 'btn-primary', onclick: () => publishFlowDownload({ html, meta, registryEntry, body, modal }) }, 'Download instead')
+    ));
+  }
 }
 
 // ---------- Main run loop ----------------------------------------------
@@ -1717,7 +1888,8 @@ function persistSettings() {
       rubric: $('rubricDims').value,
       mode: getMode(),
       proxyUrl: $('proxyUrl').value,
-      // Deliberately NOT persisting apiKey or proxyToken.
+      ghRepo: $('ghRepo').value,
+      // Deliberately NOT persisting apiKey, proxyToken, or ghPat (the PAT).
       dataset: state.dataset,
       targetScore: $('targetScore').value,
       maxIter: $('maxIter').value,
@@ -1732,6 +1904,7 @@ try {
     if (p.model) $('model').value = p.model;
     if (p.rubric) $('rubricDims').value = p.rubric;
     if (p.proxyUrl) $('proxyUrl').value = p.proxyUrl;
+    if (p.ghRepo) $('ghRepo').value = p.ghRepo;
     if (p.targetScore) $('targetScore').value = p.targetScore;
     if (p.maxIter) $('maxIter').value = p.maxIter;
     if (p.mode === 'proxy') {
@@ -1740,9 +1913,9 @@ try {
     }
     if (Array.isArray(p.dataset)) { state.dataset = p.dataset; renderDataset(state.dataset); }
   }
-  ['draftPrompt', 'model', 'rubricDims', 'proxyUrl', 'targetScore', 'maxIter']
+  ['draftPrompt', 'model', 'rubricDims', 'proxyUrl', 'ghRepo', 'targetScore', 'maxIter']
     .forEach(id => $(id).addEventListener('change', persistSettings));
-  ['draftPrompt', 'rubricDims', 'proxyUrl']
+  ['draftPrompt', 'rubricDims', 'proxyUrl', 'ghRepo']
     .forEach(id => $(id).addEventListener('input', persistSettings));
   $('datasetBody').addEventListener('input', persistSettings);
 } catch {}

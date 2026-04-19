@@ -1,0 +1,34 @@
+[
+  {
+    "slug": "evaluation-dataset-generator",
+    "title": "Evaluation Dataset Generator",
+    "description": "Given any draft prompt, produces a 10-case stress-test dataset covering happy-path, edge, adversarial, and format scenarios \u2014 with per-case grading criteria.",
+    "category": "Meta",
+    "tags": [
+      "evaluation",
+      "meta-prompt",
+      "synthetic-data"
+    ],
+    "url": "prompts/evaluation-dataset-generator.html",
+    "finalScore": 9.2,
+    "iterations": 3,
+    "cases": 5,
+    "date": "2026-04-18",
+    "model": "claude-sonnet-4-6",
+    "visibility": "public"
+  },
+  {
+    "slug": "cold-outreach---trigger-based",
+    "title": "Cold Outreach \u2014 Trigger Based",
+    "description": "Use when: prospecting into a named account that has had a recent, specific trigger (funding, exec change, product launch, news hit).",
+    "category": "Sales",
+    "tags": [],
+    "url": "prompts/cold-outreach---trigger-based.html",
+    "finalScore": 8.18,
+    "iterations": 4,
+    "cases": 10,
+    "date": "2026-04-19",
+    "model": "claude-sonnet-4-6",
+    "visibility": "public"
+  }
+]
