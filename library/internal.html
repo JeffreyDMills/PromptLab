@@ -300,8 +300,13 @@ let PROMPTS = [];
 const SHOW_INTERNAL = true;  // index.html: false, internal.html: true
 
 async function loadRegistry() {
+  // Vercel strips trailing slashes (cleanUrls + trailingSlash:false), so a
+  // relative fetch from /library resolves against /. Build the correct URL
+  // explicitly from the /library prefix in the current pathname.
+  const m = window.location.pathname.match(/^(.*\/library)(\/|$)/);
+  const base = m ? m[1] + '/' : '/library/';
   try {
-    const res = await fetch('prompts.json', { cache: 'no-store' });
+    const res = await fetch(base + 'prompts.json', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     PROMPTS = await res.json();
   } catch (e) {
